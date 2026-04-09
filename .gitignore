@@ -1,0 +1,32 @@
+# Model weights / checkpoints
+*.pt
+*.pth
+*.onnx
+MCTS/checkpoints/
+SL/checkpoints/
+data/
+
+# Training data & logs
+MCTS/data/
+MCTS/logs/
+SL/data/
+SL/logs/
+
+# CSV datasets
+*.csv
+
+# Archives
+*.zip
+
+# Shell scripts
+sl.sh
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+
+# macOS
+.DS_Store
