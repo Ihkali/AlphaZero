@@ -1,11 +1,19 @@
 """
-MCTS/model.py — AlphaZero Residual CNN  f_θ(s) → (p, v)
+MCTS/model.py — Neural network architectures for AlphaGo.
 
-Architecture:
+AlphaZeroNet  f_θ(s) → (p, v)     — shared architecture for pσ, pρ, vθ
+RolloutPolicy f_π(s) → p           — fast lightweight CNN for rollout policy pπ
+
+Architecture (AlphaZeroNet):
   Input  (B, 119, 8, 8)   [T=8 history stack, paper-style encoding]
    → ConvBlock  → N × ResBlock (SE-Net)
    → PolicyHead  (B, 4672)
    → ValueHead   (B, 1)
+
+Architecture (RolloutPolicy):
+  Input  (B, 119, 8, 8)
+   → Small ConvBlock  → K × Conv layers  (K=2, 32 filters)
+   → PolicyFC  (B, 4672)
 """
 
 import torch
@@ -118,6 +126,43 @@ class AlphaZeroNet(nn.Module):
             p_logits, v = self(board_tensor)
             p = F.softmax(p_logits, dim=1)
             return p.cpu().numpy()[0], v.cpu().numpy()[0, 0]
+
+
+class RolloutPolicy(nn.Module):
+    """Fast rollout policy pπ — lightweight CNN for quick move sampling.
+
+    In the AlphaGo paper, pπ is a "linear softmax of small pattern features"
+    that runs in ~2µs per move (accuracy 24.2%).  For chess, we use a small
+    CNN (2 conv layers, 32 filters) which is much faster than the full
+    ResNet and captures basic tactical patterns.
+    """
+    def __init__(
+        self,
+        in_channels: int = Config.input_planes,
+        filters: int = Config.rollout_filters,
+        num_blocks: int = Config.rollout_blocks,
+        policy_size: int = Config.policy_size,
+    ):
+        super().__init__()
+        layers = [
+            nn.Conv2d(in_channels, filters, 3, padding=1, bias=False),
+            nn.BatchNorm2d(filters),
+            nn.ReLU(),
+        ]
+        for _ in range(num_blocks):
+            layers.extend([
+                nn.Conv2d(filters, filters, 3, padding=1, bias=False),
+                nn.BatchNorm2d(filters),
+                nn.ReLU(),
+            ])
+        self.backbone = nn.Sequential(*layers)
+        self.policy_fc = nn.Linear(filters * 8 * 8, policy_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns raw policy logits (B, policy_size)."""
+        x = self.backbone(x)
+        x = x.view(x.size(0), -1)
+        return self.policy_fc(x)
 
 
 def save_checkpoint(model: AlphaZeroNet, path: str, optimizer=None, extra=None):

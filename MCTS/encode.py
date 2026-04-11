@@ -119,6 +119,16 @@ def index_to_move(index: int, board: chess.Board) -> chess.Move:
     to_c = from_c + dc
     from_sq = _rc_to_square(from_r, from_c, us)
     to_sq = _rc_to_square(to_r, to_c, us)
+
+    # Auto-add queen promotion for pawns reaching the back rank
+    if promotion is None:
+        piece = board.piece_at(from_sq)
+        if piece is not None and piece.piece_type == chess.PAWN:
+            to_rank = chess.square_rank(to_sq)
+            if (piece.color == chess.WHITE and to_rank == 7) or \
+               (piece.color == chess.BLACK and to_rank == 0):
+                promotion = chess.QUEEN
+
     return chess.Move(from_sq, to_sq, promotion=promotion)
 
 

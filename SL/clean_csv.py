@@ -19,11 +19,23 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import csv
-import argparse
 import multiprocessing as mp
 from functools import partial
 import chess
 from tqdm import tqdm
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CSV_PATH         = "chess_games.csv"
+OUTPUT_PATH      = None          # None = auto-generate <name>_clean.csv
+INPLACE          = False         # True = overwrite input CSV
+MIN_ELO          = 0             # minimum Elo for both players
+MIN_MOVES        = 5             # minimum plies per game
+EVENT_FILTER     = None          # e.g. "classical" or "classical,correspondence"
+WORKERS          = None          # None = CPU count
 
 
 def count_lines(path: str) -> int:
@@ -116,39 +128,25 @@ def _validate_row(row_tuple, min_elo=0, min_moves=5, event_filter=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Validate & clean chess games CSV (parallel)")
-    parser.add_argument("--csv", type=str, default="chess_games.csv")
-    parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--inplace", action="store_true")
-    parser.add_argument("--min-elo", type=int, default=0)
-    parser.add_argument("--min-moves", type=int, default=5)
-    parser.add_argument("--event", type=str, default=None,
-                        help="Filter by Event type, e.g. 'classical' or "
-                             "'classical,correspondence' (case-insensitive, comma-separated)")
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Parallel workers (default: CPU count)")
-    args = parser.parse_args()
-
-    n_workers = args.workers or mp.cpu_count()
-    csv_path = args.csv
-    if args.inplace:
+    n_workers = WORKERS or mp.cpu_count()
+    csv_path = CSV_PATH
+    if INPLACE:
         out_path = csv_path + ".tmp"
-    elif args.output:
-        out_path = args.output
+    elif OUTPUT_PATH:
+        out_path = OUTPUT_PATH
     else:
         base, ext = os.path.splitext(csv_path)
         out_path = f"{base}_clean{ext}"
 
     print(f"Input:   {csv_path}")
-    print(f"Output:  {out_path if not args.inplace else csv_path}")
+    print(f"Output:  {out_path if not INPLACE else csv_path}")
     event_filter = None
-    if args.event:
-        event_filter = [e.strip().lower() for e in args.event.split(",")]
+    if EVENT_FILTER:
+        event_filter = [e.strip().lower() for e in EVENT_FILTER.split(",")]
 
     print(f"Workers: {n_workers}")
-    if args.min_elo:
-        print(f"Min Elo: {args.min_elo}")
+    if MIN_ELO:
+        print(f"Min Elo: {MIN_ELO}")
     if event_filter:
         print(f"Event:   {event_filter}")
     print()
@@ -163,8 +161,8 @@ def main():
     error_reasons: dict[str, int] = {}
 
     worker_fn = partial(_validate_row,
-                        min_elo=args.min_elo,
-                        min_moves=args.min_moves,
+                        min_elo=MIN_ELO,
+                        min_moves=MIN_MOVES,
                         event_filter=event_filter)
 
     with open(csv_path, "r", encoding="utf-8", errors="replace") as fin, \
@@ -196,7 +194,7 @@ def main():
         pbar.set_postfix(kept=f"{kept:,}", bad=f"{removed:,}")
         pbar.close()
 
-    if args.inplace:
+    if INPLACE:
         os.replace(out_path, csv_path)
         print(f"\nOverwrote {csv_path}")
 
@@ -213,7 +211,7 @@ def main():
                                      key=lambda x: -x[1])[:15]:
             print(f"    {reason:<30s} {count:>10,}")
     print(f"{'='*60}")
-    print(f"Clean CSV: {csv_path if args.inplace else out_path}")
+    print(f"Clean CSV: {csv_path if INPLACE else out_path}")
 
 
 if __name__ == "__main__":

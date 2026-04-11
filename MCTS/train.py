@@ -1,9 +1,10 @@
 """
 MCTS/train.py — Training loop for AlphaZero.
 
-Loss: L = MSE(v, z) - π⊤ log(softmax(p)) + c·‖θ‖²
+Loss (paper Eq. 1):  L = (z − v)² − π⊤ log p + c·‖θ‖²
 
-Supports both in-memory ReplayBuffer and disk-based DiskReplayBuffer.
+Paper uses SGD with momentum 0.9 and step-based LR schedule.
+Also supports Adam with cosine annealing as an alternative.
 """
 
 import os
@@ -12,15 +13,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from MCTS.config import Config
 from MCTS.model import AlphaZeroNet, save_checkpoint
 
 
 class WarmupCosineScheduler:
-    """Linear warmup → cosine annealing."""
+    """Linear warmup → cosine annealing (used with Adam)."""
     def __init__(self, optimizer, warmup_steps, total_steps, lr_min=1e-5):
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
@@ -44,18 +43,79 @@ class WarmupCosineScheduler:
         return self.optimizer.param_groups[0]["lr"]
 
 
+class WarmupMultiStepScheduler:
+    """Linear warmup → step-based LR decay (paper's approach for SGD).
+
+    LR drops by `gamma` at each milestone (measured in global gradient steps).
+    """
+    def __init__(self, optimizer, warmup_steps, milestones, gamma=0.1,
+                 lr_min=1e-5):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.milestones = sorted(milestones)
+        self.gamma = gamma
+        self.lr_min = lr_min
+        self.base_lrs = [pg["lr"] for pg in optimizer.param_groups]
+        self.step_count = 0
+
+    def step(self):
+        self.step_count += 1
+        if self.step_count <= self.warmup_steps:
+            scale = self.step_count / max(1, self.warmup_steps)
+        else:
+            scale = 1.0
+            for m in self.milestones:
+                if self.step_count >= m:
+                    scale *= self.gamma
+        for pg, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+            pg["lr"] = max(self.lr_min, base_lr * scale)
+
+    def get_lr(self):
+        return self.optimizer.param_groups[0]["lr"]
+
+
 class Trainer:
+    """AlphaZero trainer — supports SGD (paper) and Adam optimisers.
+
+    The trainer is designed to persist across iterations: create it once,
+    then call .train() each iteration.  The LR scheduler tracks global
+    step count across all calls.
+    """
     def __init__(self, net, device=Config.device, lr=Config.learning_rate,
-                 weight_decay=Config.weight_decay):
+                 weight_decay=Config.weight_decay,
+                 optimizer_type=Config.optimizer,
+                 momentum=Config.momentum,
+                 total_steps=None):
         self.net = net
         self.device = device
-        self.optimizer = Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
-        self.scheduler = WarmupCosineScheduler(
-            self.optimizer,
-            warmup_steps=Config.warmup_steps,
-            total_steps=Config.train_steps,
-            lr_min=Config.lr_min,
-        )
+        self.global_step = 0
+
+        if total_steps is None:
+            total_steps = Config.num_iterations * Config.train_steps
+
+        if optimizer_type == "sgd":
+            self.optimizer = torch.optim.SGD(
+                net.parameters(), lr=lr, momentum=momentum,
+                weight_decay=weight_decay, nesterov=Config.nesterov)
+            # Step-based milestones (convert iteration milestones → step milestones)
+            step_milestones = [m * Config.train_steps
+                               for m in Config.lr_milestones]
+            self.scheduler = WarmupMultiStepScheduler(
+                self.optimizer,
+                warmup_steps=Config.warmup_steps,
+                milestones=step_milestones,
+                gamma=Config.lr_gamma,
+                lr_min=Config.lr_min,
+            )
+        else:
+            self.optimizer = torch.optim.Adam(
+                net.parameters(), lr=lr, weight_decay=weight_decay)
+            self.scheduler = WarmupCosineScheduler(
+                self.optimizer,
+                warmup_steps=Config.warmup_steps,
+                total_steps=total_steps,
+                lr_min=Config.lr_min,
+            )
 
     def train(self, replay_buffer, num_steps=Config.train_steps,
               batch_size=Config.batch_size, verbose=True):
@@ -92,6 +152,7 @@ class Trainer:
                                      max_norm=Config.grad_clip)
             self.optimizer.step()
             self.scheduler.step()
+            self.global_step += 1
 
             history["total"].append(total_loss.item())
             history["policy"].append(policy_loss.item())

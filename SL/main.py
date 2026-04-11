@@ -18,7 +18,6 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import argparse
 import logging
 import torch
 from torch.utils.data import DataLoader
@@ -27,6 +26,22 @@ from SL.config import Config
 from SL.model import AlphaZeroNet, load_checkpoint
 from SL.dataset import build_cache, make_datasets, chunk_iterator
 from SL.train import Trainer
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+QUICK_MODE       = False         # True = tiny run (1000 games, 1 epoch)
+RESUME_PATH      = None          # path to checkpoint to resume from
+CSV_PATH         = Config.csv_path
+MAX_GAMES        = None          # None = use Config default
+MIN_ELO          = None          # None = use Config default
+EPOCHS           = None          # None = use Config default
+BATCH_SIZE       = None          # None = use Config default
+LEARNING_RATE    = None          # None = use Config default
+NUM_WORKERS      = None          # None = use Config default
+REBUILD_CACHE    = False         # True = force rebuild numpy cache
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,54 +72,27 @@ def setup_logging():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  CLI
-# ═══════════════════════════════════════════════════════════════════════════
-
-def parse_args():
-    p = argparse.ArgumentParser(description="Supervised Learning Chess Trainer")
-    p.add_argument("--quick", action="store_true",
-                   help="Tiny run for testing (1000 games, 1 epoch)")
-    p.add_argument("--resume", type=str, default=None,
-                   help="Path to checkpoint to resume from")
-    p.add_argument("--csv", type=str, default=Config.csv_path,
-                   help="Path to chess_games_2000.csv")
-    p.add_argument("--max-games", type=int, default=None,
-                   help="Max games to use (0=all)")
-    p.add_argument("--min-elo", type=int, default=None,
-                   help="Minimum Elo filter for both players")
-    p.add_argument("--epochs", type=int, default=None)
-    p.add_argument("--batch-size", type=int, default=None)
-    p.add_argument("--lr", type=float, default=None)
-    p.add_argument("--num-workers", type=int, default=None,
-                   help="DataLoader workers (0 = main process only, saves RAM)")
-    p.add_argument("--rebuild-cache", action="store_true",
-                   help="Force rebuild of numpy cache")
-    return p.parse_args()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    args = parse_args()
     logger = setup_logging()
 
-    # Apply CLI overrides
-    if args.max_games is not None:
-        Config.max_games = args.max_games
-    if args.min_elo is not None:
-        Config.min_elo = args.min_elo
-    if args.epochs is not None:
-        Config.num_epochs = args.epochs
-    if args.batch_size is not None:
-        Config.batch_size = args.batch_size
-    if args.lr is not None:
-        Config.learning_rate = args.lr
-    if args.num_workers is not None:
-        Config.num_data_workers = args.num_workers
+    # Apply overrides
+    if MAX_GAMES is not None:
+        Config.max_games = MAX_GAMES
+    if MIN_ELO is not None:
+        Config.min_elo = MIN_ELO
+    if EPOCHS is not None:
+        Config.num_epochs = EPOCHS
+    if BATCH_SIZE is not None:
+        Config.batch_size = BATCH_SIZE
+    if LEARNING_RATE is not None:
+        Config.learning_rate = LEARNING_RATE
+    if NUM_WORKERS is not None:
+        Config.num_data_workers = NUM_WORKERS
 
-    if args.quick:
+    if QUICK_MODE:
         Config.max_games = 1000
         Config.num_epochs = 1
         Config.min_elo = 0
@@ -127,7 +115,7 @@ def main():
     os.makedirs(Config.log_dir, exist_ok=True)
 
     # ── Step 1: Build cache ───────────────────────────────────────────
-    if args.rebuild_cache:
+    if REBUILD_CACHE:
         import shutil
         cache_dir = "SL/data"
         if os.path.exists(cache_dir):
@@ -135,7 +123,7 @@ def main():
             logger.info("Cleared old cache.")
 
     n_positions = build_cache(
-        csv_path=args.csv,
+        csv_path=CSV_PATH,
         max_games=Config.max_games,
         min_elo=Config.min_elo,
     )
@@ -147,8 +135,8 @@ def main():
     logger.info(f"Model: {n_params:,} parameters")
 
     start_step = 0
-    if args.resume:
-        ckpt_path = args.resume
+    if RESUME_PATH:
+        ckpt_path = RESUME_PATH
         if not os.path.isabs(ckpt_path):
             ckpt_path = os.path.join(Config.checkpoint_dir, ckpt_path)
         if os.path.isfile(ckpt_path):

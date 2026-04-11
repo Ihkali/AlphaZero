@@ -11,9 +11,16 @@ Usage:
 import os
 import sys
 import csv
-import argparse
 from collections import Counter
 from tqdm import tqdm
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CSV_PATH         = "chess_games.csv"
+NUM_BUCKETS      = 15            # histogram buckets
 
 
 def count_lines(path: str) -> int:
@@ -25,21 +32,15 @@ def count_lines(path: str) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Elo distribution of chess CSV")
-    parser.add_argument("--csv", type=str, default="chess_games.csv")
-    parser.add_argument("--buckets", type=int, default=15,
-                        help="Number of histogram buckets (default: 15)")
-    args = parser.parse_args()
-
-    total = count_lines(args.csv)
-    print(f"Scanning {args.csv} ({total:,} rows)...\n")
+    total = count_lines(CSV_PATH)
+    print(f"Scanning {CSV_PATH} ({total:,} rows)...\n")
 
     white_elos = []
     black_elos = []
     avg_elos = []
     bad = 0
 
-    with open(args.csv, "r", encoding="utf-8", errors="replace") as f:
+    with open(CSV_PATH, "r", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in tqdm(reader, total=total, unit="game", desc="Reading",
                         dynamic_ncols=True):
@@ -76,7 +77,7 @@ def main():
           f"avg: {sum(avg_elos)//len(avg_elos):,}")
 
     # Histogram of average Elo
-    bucket_size = max(1, (max_elo - min_elo + 1) // args.buckets)
+    bucket_size = max(1, (max_elo - min_elo + 1) // NUM_BUCKETS)
     buckets = Counter()
     for e in avg_elos:
         b = ((e - min_elo) // bucket_size) * bucket_size + min_elo
@@ -85,7 +86,7 @@ def main():
     max_count = max(buckets.values())
     bar_width = 40
 
-    print(f"\n  Average Elo distribution ({args.buckets} buckets):\n")
+    print(f"\n  Average Elo distribution ({NUM_BUCKETS} buckets):\n")
     print(f"  {'Elo range':>15s}  {'Count':>10s}  {'%':>6s}  Bar")
     print(f"  {'-'*15}  {'-'*10}  {'-'*6}  {'-'*bar_width}")
 

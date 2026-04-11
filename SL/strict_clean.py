@@ -35,11 +35,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import csv
 import heapq
-import argparse
 import multiprocessing as mp
 from functools import partial
 import chess
 from tqdm import tqdm
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CSV_PATH         = "chess_games.csv"
+OUTPUT_PATH      = "chess_games_top10k.csv"
+TOP_N            = 10_000        # keep top N games by average Elo
+MIN_MOVES        = 10            # minimum plies (half-moves) per game
+WORKERS          = None          # None = CPU count
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -171,27 +181,13 @@ def _validate_row(row, min_moves=10):
 # ─── Main ────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Strict game validation: simulate + natural ending + top-N by Elo")
-    parser.add_argument("--csv", type=str, default="chess_games.csv",
-                        help="Input CSV path")
-    parser.add_argument("--output", type=str, default="chess_games_top10k.csv",
-                        help="Output CSV path")
-    parser.add_argument("--top-n", type=int, default=10_000,
-                        help="Keep top N games ranked by average Elo")
-    parser.add_argument("--min-moves", type=int, default=10,
-                        help="Minimum plies (half-moves) per game")
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Parallel workers (default: CPU count)")
-    args = parser.parse_args()
-
-    n_workers = args.workers or mp.cpu_count()
-    csv_path = args.csv
+    n_workers = WORKERS or mp.cpu_count()
+    csv_path = CSV_PATH
 
     print(f"Input:      {csv_path}")
-    print(f"Output:     {args.output}")
-    print(f"Top-N:      {args.top_n:,}")
-    print(f"Min moves:  {args.min_moves}")
+    print(f"Output:     {OUTPUT_PATH}")
+    print(f"Top-N:      {TOP_N:,}")
+    print(f"Min moves:  {MIN_MOVES}")
     print(f"Workers:    {n_workers}")
     print()
 
@@ -206,7 +202,7 @@ def main():
     # ── Pass 1: validate all games, collect valid ones in a min-heap ──
     #    Heap keeps only the top-N by avg Elo (O(N log top_n) memory).
     CHUNK = 4096
-    worker_fn = partial(_validate_row, min_moves=args.min_moves)
+    worker_fn = partial(_validate_row, min_moves=MIN_MOVES)
 
     # heap of (avg_elo, counter, row_dict)  — min-heap, so lowest elo pops first
     heap: list[tuple[float, int, dict]] = []
@@ -230,7 +226,7 @@ def main():
                 passed += 1
                 ending_counts[reason] = ending_counts.get(reason, 0) + 1
                 counter += 1
-                if len(heap) < args.top_n:
+                if len(heap) < TOP_N:
                     heapq.heappush(heap, (avg_elo, counter, row))
                 elif avg_elo > heap[0][0]:
                     heapq.heapreplace(heap, (avg_elo, counter, row))
@@ -252,7 +248,7 @@ def main():
     heap.sort(key=lambda x: -x[0])
 
     # ── Write output CSV ──────────────────────────────────────────────
-    with open(args.output, "w", encoding="utf-8", newline="") as fout:
+    with open(OUTPUT_PATH, "w", encoding="utf-8", newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=fieldnames)
         writer.writeheader()
         for avg_elo, _, row in heap:
@@ -272,7 +268,7 @@ def main():
     for ending, cnt in sorted(ending_counts.items(), key=lambda x: -x[1]):
         print(f"    {ending:<28s} {cnt:>10,}")
     print()
-    print(f"  Top {len(heap):,} games written to: {args.output}")
+    print(f"  Top {len(heap):,} games written to: {OUTPUT_PATH}")
     if elos:
         print(f"  Elo range: {elos[-1]:.0f} – {elos[0]:.0f}  "
               f"(avg {sum(elos)/len(elos):.0f})")

@@ -14,7 +14,6 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import argparse
 import glob
 import threading
 import chess
@@ -26,6 +25,17 @@ import pygame
 from SL.config import Config
 from SL.encode import encode_board, move_to_index, index_to_move, get_legal_mask
 from SL.model import AlphaZeroNet, load_checkpoint
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHECKPOINT_PATH  = None         # None = auto-detect latest
+HUMAN_COLOR      = "white"       # "white" or "black"
+TEMPERATURE      = 0.1           # sampling temperature (0=greedy)
+DEVICE           = Config.device
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Constants
@@ -62,16 +72,16 @@ PIECE_UNICODE = {
 # ═══════════════════════════════════════════════════════════════════════════
 
 def find_latest_checkpoint(ckpt_dir: str = Config.checkpoint_dir) -> str | None:
-    latest = os.path.join(ckpt_dir, "latest.pt")
-    if os.path.isfile(latest):
-        return latest
-    best = os.path.join(ckpt_dir, "sl_best.pt")
-    if os.path.isfile(best):
-        return best
-    pattern = os.path.join(ckpt_dir, "sl_step_*.pt")
-    files = sorted(glob.glob(pattern))
-    if files:
-        return files[-1]
+    # latest = os.path.join(ckpt_dir, "latest.pt")
+    # if os.path.isfile(latest):
+    #     return latest
+    # best = os.path.join(ckpt_dir, "sl_best.pt")
+    # if os.path.isfile(best):
+    #     return best
+    # pattern = os.path.join(ckpt_dir, "sl_step_*.pt")
+    # files = sorted(glob.glob(pattern))
+    # if files:
+    #     return files[-1]
     final = os.path.join(ckpt_dir, "final_model.pt")
     if os.path.isfile(final):
         return final
@@ -516,21 +526,10 @@ class PlayGUI:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Play against the SL-trained chess AI (GUI)")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to checkpoint (default: auto-detect latest)")
-    parser.add_argument("--color", type=str, default="white",
-                        choices=["white", "black"], help="Your color")
-    parser.add_argument("--temperature", type=float, default=0.1,
-                        help="Sampling temperature (0=greedy, default 0.1)")
-    parser.add_argument("--device", type=str, default=Config.device)
-    args = parser.parse_args()
+    device = DEVICE
+    human_is_white = HUMAN_COLOR.lower() == "white"
 
-    device = args.device
-    human_is_white = args.color.lower() == "white"
-
-    ckpt = args.checkpoint or find_latest_checkpoint()
+    ckpt = CHECKPOINT_PATH or find_latest_checkpoint()
 
     print("Loading SL model...")
     if ckpt and os.path.isfile(ckpt):
@@ -556,9 +555,9 @@ def main():
     net.eval()
 
     print(f"  You are {'White' if human_is_white else 'Black'}")
-    print(f"  Temperature: {args.temperature}  |  R=reset  Q=quit\n")
+    print(f"  Temperature: {TEMPERATURE}  |  R=reset  Q=quit\n")
 
-    gui = PlayGUI(net, human_is_white, args.temperature, device)
+    gui = PlayGUI(net, human_is_white, TEMPERATURE, device)
     gui.run()
 
 

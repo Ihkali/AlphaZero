@@ -15,7 +15,6 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import argparse
 import glob
 import time
 import threading
@@ -28,6 +27,18 @@ import pygame
 from SL.config import Config
 from SL.encode import encode_board, move_to_index, index_to_move, get_legal_mask
 from SL.model import AlphaZeroNet
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHECKPOINT_PATH  = None          # None = auto-detect latest
+TEMPERATURE      = 0.3           # sampling temperature
+MOVE_DELAY       = 0.0           # seconds between moves
+NUM_GAMES        = 0             # 0 = infinite
+DEVICE           = Config.device
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Constants
@@ -461,22 +472,9 @@ class SelfPlayGUI:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Watch the SL model play against itself (GUI)")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to checkpoint (default: auto-detect)")
-    parser.add_argument("--temperature", type=float, default=0.3,
-                        help="Sampling temperature (default 0.3)")
-    parser.add_argument("--delay", type=float, default=0.0,
-                        help="Seconds between moves (default 0.8)")
-    parser.add_argument("--games", type=int, default=0,
-                        help="Number of games to play (0 = infinite)")
-    parser.add_argument("--device", type=str, default=Config.device)
-    args = parser.parse_args()
+    device = DEVICE
 
-    device = args.device
-
-    ckpt = args.checkpoint or find_latest_checkpoint()
+    ckpt = CHECKPOINT_PATH or find_latest_checkpoint()
 
     print("Loading SL model for self-play...")
     if ckpt and os.path.isfile(ckpt):
@@ -500,12 +498,12 @@ def main():
         net = AlphaZeroNet().to(device)
     net.eval()
 
-    print(f"  Temperature: {args.temperature}")
-    print(f"  Move delay:  {args.delay}s")
-    print(f"  Games:       {'infinite' if args.games == 0 else args.games}")
+    print(f"  Temperature: {TEMPERATURE}")
+    print(f"  Move delay:  {MOVE_DELAY}s")
+    print(f"  Games:       {'infinite' if NUM_GAMES == 0 else NUM_GAMES}")
     print(f"  Controls:    SPACE=pause  R=new game  UP/DOWN=speed  Q=quit\n")
 
-    gui = SelfPlayGUI(net, args.temperature, device, args.delay, args.games)
+    gui = SelfPlayGUI(net, TEMPERATURE, device, MOVE_DELAY, NUM_GAMES)
     gui.run()
 
 

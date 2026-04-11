@@ -18,7 +18,7 @@ import torch.multiprocessing as mp
 
 from MCTS.config import Config
 from MCTS.encode import encode_board, index_to_move
-from MCTS.mcts import mcts_search, select_action
+from MCTS.mcts import mcts_search, select_action, get_subtree_for_action
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -197,21 +197,36 @@ def self_play_game(
     temp_threshold=Config.temp_threshold_move,
     max_moves=Config.max_game_moves,
     device="cpu", resign_threshold=-1.0,
+    value_net=None, rollout_net=None,
+    lambda_mix=Config.lambda_mix,
+    force_full_game=False,
 ):
+    """Play one self-play game with MCTS.
+
+    When `force_full_game` is True, the game ignores the resign
+    threshold and plays to completion — used for resign verification
+    (paper recommends checking that the resign threshold is calibrated).
+    """
     board = chess.Board()
     game_history = []
     move_count = 0
     resign_count = 0
+    resigned = False
+    reuse_root = None  # subtree reuse: persist tree across moves
 
     while not board.is_game_over() and move_count < max_moves:
         temperature = 1.0 if move_count < temp_threshold else 0.0
         encoded = encode_board(board)
 
-        policy, root_value = mcts_search(
-            board, neural_net,
+        policy, root_value, root_node = mcts_search(
+            board, policy_net=neural_net,
+            value_net=value_net,
+            rollout_net=rollout_net,
             num_simulations=num_sims,
+            lambda_mix=lambda_mix,
             temperature=temperature,
             device=device,
+            reuse_root=reuse_root,
         )
         game_history.append((encoded, policy, board.turn))
 
@@ -219,17 +234,23 @@ def self_play_game(
         move = index_to_move(action, board)
         if move not in board.legal_moves:
             move = list(board.legal_moves)[0]
+
+        # Extract the subtree for the chosen action → reuse next move
+        reuse_root = get_subtree_for_action(root_node, action)
+
         board.push(move)
         move_count += 1
 
+        # Resign logic (skip if force_full_game for verification)
         if resign_threshold > -1.0 and root_value < resign_threshold:
             resign_count += 1
-            if resign_count >= Config.resign_consecutive:
+            if resign_count >= Config.resign_consecutive and not force_full_game:
+                resigned = True
                 break
         else:
             resign_count = 0
 
-    outcome = _get_game_result(board)
+    outcome = _get_game_result(board, resigned)
     examples = []
     for encoded, policy, player in game_history:
         if outcome == 0:
@@ -243,7 +264,10 @@ def self_play_game(
     return examples, outcome, move_count
 
 
-def _get_game_result(board):
+def _get_game_result(board, resigned=False):
+    if resigned:
+        # The side to move resigned → the other side wins
+        return -1 if board.turn == chess.WHITE else 1
     if board.is_checkmate():
         return -1 if board.turn == chess.WHITE else 1
     return 0
@@ -251,23 +275,30 @@ def _get_game_result(board):
 
 def _worker_play_games(worker_id, model_state_dict, num_games, num_sims,
                        max_moves, temp_threshold, resign_threshold,
-                       result_queue):
+                       result_queue,
+                       resign_check_fraction=Config.resign_check_fraction):
     from MCTS.model import AlphaZeroNet
     net = AlphaZeroNet()
     net.load_state_dict(model_state_dict)
     net.eval()
     device = "cpu"
     for g in range(num_games):
+        # Resign verification: a fraction of games play out fully
+        # to check that the resign threshold is properly calibrated
+        force_full = (np.random.random() < resign_check_fraction
+                      and resign_threshold > -1.0)
         examples, outcome, move_count = self_play_game(
             net, num_sims=num_sims, device=device,
             max_moves=max_moves, temp_threshold=temp_threshold,
             resign_threshold=resign_threshold,
+            force_full_game=force_full,
         )
         outcome_str = {1: "White wins", -1: "Black wins", 0: "Draw"}[outcome]
         result_queue.put({
             "worker": worker_id, "game": g, "examples": examples,
             "outcome": outcome, "outcome_str": outcome_str,
             "move_count": move_count,
+            "force_full": force_full,
         })
 
 

@@ -14,7 +14,6 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import argparse
 import glob
 import threading
 import chess
@@ -23,9 +22,19 @@ import numpy as np
 import pygame
 
 from MCTS.config import Config
-from MCTS.encode import encode_board, index_to_move
-from MCTS.model import AlphaZeroNet, load_checkpoint
-from MCTS.mcts import mcts_search, select_action
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION — edit these instead of using CLI flags
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHECKPOINT_PATH  =  "/Users/ihkali/Desktop/AlphaZero/data/latest.pt"          # None = auto-detect latest
+HUMAN_COLOR      = "white"       # "white" or "black"
+MCTS_SIMS        = 800          # MCTS simulations per AI move
+DEVICE           = Config.device
+from MCTS.encode import encode_board, index_to_move, move_to_index
+from MCTS.model import AlphaZeroNet, RolloutPolicy, load_checkpoint
+from MCTS.mcts import mcts_search, select_action, get_subtree_for_action
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Constants
@@ -83,8 +92,11 @@ def find_latest_checkpoint(ckpt_dir: str = Config.checkpoint_dir) -> str | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PlayGUI:
-    def __init__(self, net, human_is_white: bool, num_sims: int, device: str):
+    def __init__(self, net, human_is_white: bool, num_sims: int, device: str,
+                 value_net=None, rollout_net=None):
         self.net = net
+        self.value_net = value_net
+        self.rollout_net = rollout_net
         self.human_is_white = human_is_white
         self.num_sims = num_sims
         self.device = device
@@ -100,6 +112,7 @@ class PlayGUI:
         self.position_eval = None    # V(s) for current position
         self.game_over = False
         self.promotion_pending = None
+        self.mcts_root = None      # persistent MCTS tree for subtree reuse
 
         pygame.init()
         self.screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -391,6 +404,14 @@ class PlayGUI:
 
     def make_move(self, move):
         self.move_log.append(self.board.san(move))
+
+        # Advance the persistent MCTS tree through the human's move
+        # (must encode before pushing, since move_to_index needs pre-move board)
+        if self.mcts_root is not None:
+            action = move_to_index(move, self.board)
+            self.mcts_root = get_subtree_for_action(self.mcts_root, action)
+        # (if not found, mcts_root becomes None → fresh tree next search)
+
         self.board.push(move)
         self.last_move = move
         self.selected_sq = None
@@ -405,12 +426,15 @@ class PlayGUI:
             threading.Thread(target=self._ai_turn, daemon=True).start()
 
     def _ai_turn(self):
-        """Run full MCTS search and pick the best move."""
-        policy, root_value = mcts_search(
-            self.board, self.net,
+        """Run full MCTS search with subtree reuse and pick the best move."""
+        policy, root_value, root_node = mcts_search(
+            self.board, policy_net=self.net,
+            value_net=self.value_net,
+            rollout_net=self.rollout_net,
             num_simulations=self.num_sims,
             temperature=0.0,          # greedy for play
             device=self.device,
+            reuse_root=self.mcts_root,
         )
         self.ai_eval = root_value
 
@@ -418,6 +442,9 @@ class PlayGUI:
         move = index_to_move(action, self.board)
         if move not in self.board.legal_moves:
             move = list(self.board.legal_moves)[0]
+
+        # Advance the persistent tree through the AI's chosen move
+        self.mcts_root = get_subtree_for_action(root_node, action)
 
         self.move_log.append(self.board.san(move))
         self.board.push(move)
@@ -471,6 +498,7 @@ class PlayGUI:
                         self.position_eval = None
                         self.game_over = False
                         self.promotion_pending = None
+                        self.mcts_root = None  # reset tree on new game
                         self.status = ("Your move" if self.is_human_turn()
                                        else "AI thinking...")
                         if not self.is_human_turn():
@@ -487,37 +515,50 @@ class PlayGUI:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Play against the AlphaZero MCTS chess AI (GUI)")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to checkpoint (default: auto-detect latest)")
-    parser.add_argument("--color", type=str, default="white",
-                        choices=["white", "black"], help="Your color")
-    parser.add_argument("--sims", type=int, default=800,
-                        help="MCTS simulations per AI move (default: 800)")
-    parser.add_argument("--device", type=str, default=Config.device)
-    args = parser.parse_args()
-
-    device = args.device
-    human_is_white = args.color.lower() == "white"
+    device = DEVICE
+    human_is_white = HUMAN_COLOR.lower() == "white"
 
     # Resolve checkpoint
-    ckpt = args.checkpoint or find_latest_checkpoint()
+    ckpt = CHECKPOINT_PATH or find_latest_checkpoint()
 
-    print("Loading AlphaZero MCTS model...")
+    print("Loading AlphaGo MCTS model...")
     net = AlphaZeroNet().to(device)
+    value_net = None
+    rollout_net = None
+
     if ckpt and os.path.isfile(ckpt):
         load_checkpoint(net, ckpt, device=device)
-        print(f"  Loaded: {ckpt}")
+        print(f"  Loaded policy net (pσ): {ckpt}")
+
+        # Try loading combined model package for value net + rollout
+        combined_path = os.path.join(Config.checkpoint_dir, "alphago_combined.pt")
+        if os.path.isfile(combined_path):
+            data = torch.load(combined_path, map_location=device, weights_only=False)
+            if "value_net_state" in data:
+                value_net = AlphaZeroNet(
+                    num_filters=net.conv_block.conv.weight.shape[0],
+                    num_blocks=len(net.res_blocks),
+                ).to(device)
+                value_net.load_state_dict(data["value_net_state"])
+                value_net.eval()
+                print(f"  Loaded value net (vθ)")
+            if "rollout_policy_state" in data:
+                rollout_net = RolloutPolicy().to(device)
+                rollout_net.load_state_dict(data["rollout_policy_state"])
+                rollout_net.eval()
+                print(f"  Loaded rollout policy (pπ)")
+        else:
+            print("  No combined model found — using policy net value head only (λ=0)")
     else:
-        print(f"  No checkpoint found (looked in {Config.checkpoint_dir}/)")
+        print(f"  No checkpoint found (looked in {Config.checkpoint_dir}/)") 
         print("  Playing with untrained network.")
     net.eval()
 
     print(f"  You are {'White' if human_is_white else 'Black'}")
-    print(f"  MCTS sims: {args.sims}  |  R=reset  Q=quit\n")
+    print(f"  MCTS sims: {MCTS_SIMS}  |  R=reset  Q=quit\n")
 
-    gui = PlayGUI(net, human_is_white, args.sims, device)
+    gui = PlayGUI(net, human_is_white, MCTS_SIMS, device,
+                  value_net=value_net, rollout_net=rollout_net)
     gui.run()
 
 
