@@ -261,7 +261,7 @@ def main():
             play_net,
             num_games=self_play_games,
             num_sims=num_sims,
-            device="cpu",               # workers use CPU
+            device=device,              # inference server uses GPU/MPS
             num_workers=Config.num_workers,
             verbose=True,
             resign_threshold=resign_thresh,

@@ -69,12 +69,12 @@ class Config:
     resign_check_fraction: float = 0.1   # 10% of games play out despite resign
 
     # ── Disk-based data management ────────────────────────────────────
-    data_window: int = 20            # use last N iterations' data
+    data_window: int = 5             # use last N iterations' data
     save_data_every_iter: bool = True
     replay_buffer_size: int = 500_000
 
     # ── Training (paper: L = (z−v)² − π⊤log p + c‖θ‖²) ──────────────
-    optimizer: str = "sgd"           # "sgd" (paper) or "adam"
+    optimizer: str = "adam"           # "sgd" (paper) or "adam"
     batch_size: int = 256
     train_steps: int = 1000          # gradient steps per iteration
     learning_rate: float = 0.01      # SGD initial LR (scaled for bs=256)
@@ -95,13 +95,20 @@ class Config:
     use_eval_gating: bool = False    # paper: no gating (always use latest)
 
     # ── Main loop ─────────────────────────────────────────────────────
-    num_iterations: int = 5
+    num_iterations: int = 15
 
     # ── Device ────────────────────────────────────────────────────────
     device: str = "mps"
 
     # ── Parallel ──────────────────────────────────────────────────────
     num_workers: int = 4             # self-play worker processes
+
+    # ── Inference server (batched GPU/MPS inference) ──────────────────
+    # Each worker runs concurrent_games threads, each blocking on its own
+    # response queue → max in-flight = num_workers × concurrent_games
+    concurrent_games: int = 2        # games played simultaneously per worker
+    inference_batch_size: int = 8    # num_workers(4) × concurrent_games(2)
+    inference_batch_timeout: float = 0.005  # seconds to wait for batch fill
 
     # ── Paths ─────────────────────────────────────────────────────────
     checkpoint_dir: str = "MCTS/checkpoints"

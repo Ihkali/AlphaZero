@@ -128,6 +128,17 @@ class DiskReplayBuffer:
         # Take the last `window` iterations
         s_files = s_files[-self.window:]
 
+        # Delete old iteration files outside the window to free disk space
+        all_s_files = sorted(glob.glob(pattern))
+        old_files = all_s_files[:-self.window] if len(all_s_files) > self.window else []
+        for old_sf in old_files:
+            prefix = old_sf.replace("_states.npy", "")
+            for suffix in ("_states.npy", "_policies.npy", "_values.npy"):
+                path = prefix + suffix
+                if os.path.exists(path):
+                    os.remove(path)
+            print(f"  DiskReplayBuffer: deleted old data {os.path.basename(prefix)}")
+
         self._files = []
         self._counts = []
         for sf in s_files:
@@ -273,62 +284,101 @@ def _get_game_result(board, resigned=False):
     return 0
 
 
-def _worker_play_games(worker_id, model_state_dict, num_games, num_sims,
+def _worker_play_games(worker_id, num_games, num_sims,
                        max_moves, temp_threshold, resign_threshold,
-                       result_queue,
+                       request_queue, response_queues, result_queue,
+                       concurrent=Config.concurrent_games,
                        resign_check_fraction=Config.resign_check_fraction):
-    from MCTS.model import AlphaZeroNet
-    net = AlphaZeroNet()
-    net.load_state_dict(model_state_dict)
-    net.eval()
-    device = "cpu"
-    for g in range(num_games):
-        # Resign verification: a fraction of games play out fully
-        # to check that the resign threshold is properly calibrated
+    import threading
+    from MCTS.inference_server import InferenceClient
+
+    def _play_one(game_idx, slot):
+        """Play a single game using this slot's own InferenceClient."""
+        virtual_id = worker_id * concurrent + slot
+        client = InferenceClient(virtual_id, request_queue,
+                                 response_queues[virtual_id])
         force_full = (np.random.random() < resign_check_fraction
                       and resign_threshold > -1.0)
         examples, outcome, move_count = self_play_game(
-            net, num_sims=num_sims, device=device,
+            client, num_sims=num_sims, device="cpu",
             max_moves=max_moves, temp_threshold=temp_threshold,
             resign_threshold=resign_threshold,
             force_full_game=force_full,
         )
         outcome_str = {1: "White wins", -1: "Black wins", 0: "Draw"}[outcome]
         result_queue.put({
-            "worker": worker_id, "game": g, "examples": examples,
+            "worker": worker_id, "game": game_idx, "examples": examples,
             "outcome": outcome, "outcome_str": outcome_str,
             "move_count": move_count,
             "force_full": force_full,
         })
 
+    game_idx = 0
+    while game_idx < num_games:
+        batch = min(concurrent, num_games - game_idx)
+        threads = []
+        for s in range(batch):
+            t = threading.Thread(target=_play_one, args=(game_idx + s, s))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+        game_idx += batch
+
 
 def run_self_play(neural_net, num_games=Config.self_play_games,
-                  num_sims=Config.num_mcts_sims, device="cpu",
+                  num_sims=Config.num_mcts_sims, device="mps",
                   num_workers=Config.num_workers, verbose=True,
                   resign_threshold=-1.0, iteration=0,
                   data_dir=Config.data_dir):
     """
-    Run parallel self-play.  Each completed game is flushed to disk
-    immediately via StreamingDataWriter — RAM holds zero past games.
+    Run parallel self-play with centralized GPU/MPS inference.
+
+    Architecture:
+      - One inference server process holds the model on GPU/MPS
+      - N worker processes run MCTS on CPU, sending leaf positions
+        to the server for batched neural network evaluation
+      - Results stream to disk via StreamingDataWriter
     """
+    from MCTS.inference_server import inference_server_loop, SHUTDOWN
+
     model_state_dict = {k: v.cpu() for k, v in neural_net.state_dict().items()}
     games_per_worker = _distribute(num_games, num_workers)
     active_workers = sum(1 for g in games_per_worker if g > 0)
 
     if verbose:
-        print(f"  Launching {active_workers} workers "
-              f"({num_games} games, {num_sims} sims/move)...")
+        print(f"  Launching {active_workers} workers × "
+              f"{Config.concurrent_games} threads + 1 inference server "
+              f"({num_games} games, {num_sims} sims/move, device={device})...")
 
+    # Communication queues — one response queue per virtual worker
+    # (num_workers × concurrent_games), so threads never cross-read
+    num_virtual = num_workers * Config.concurrent_games
+    request_queue = mp.Queue()
+    response_queues = [mp.Queue() for _ in range(num_virtual)]
     result_queue = mp.Queue()
+
+    # Start centralized inference server on GPU/MPS
+    server = mp.Process(
+        target=inference_server_loop,
+        args=(model_state_dict, device, request_queue,
+              response_queues, Config.inference_batch_size,
+              Config.inference_batch_timeout),
+        daemon=True,
+    )
+    server.start()
+
     processes = []
     for w_id, n_games in enumerate(games_per_worker):
         if n_games == 0:
             continue
         p = mp.Process(
             target=_worker_play_games,
-            args=(w_id, model_state_dict, n_games, num_sims,
+            args=(w_id, n_games, num_sims,
                   Config.max_game_moves, Config.temp_threshold_move,
-                  resign_threshold, result_queue),
+                  resign_threshold,
+                  request_queue, response_queues,
+                  result_queue),
         )
         p.start()
         processes.append(p)
@@ -373,6 +423,12 @@ def run_self_play(neural_net, num_games=Config.self_play_games,
 
     for p in processes:
         p.join()
+
+    # Shutdown inference server
+    request_queue.put(SHUTDOWN)
+    server.join(timeout=10)
+    if server.is_alive():
+        server.terminate()
 
     # Finalize the npy files (patch headers with final count)
     s_path, p_path, v_path, count = writer.finalize()

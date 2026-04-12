@@ -158,14 +158,16 @@ def mcts_search(
             states = np.stack([encode_board(n.board) for n in nodes_list])
             tensor = torch.from_numpy(states).to(device)
 
-            # Prior probabilities from SL policy pσ
+            # Evaluate policy (pσ) and value (vθ) — single forward
+            # pass when using the same network (avoids duplicate
+            # inference round-trips to the server)
             with torch.no_grad():
-                p_logits, _ = policy_net(tensor)
+                if v_net is policy_net:
+                    p_logits, v_vals = policy_net(tensor)
+                else:
+                    p_logits, _ = policy_net(tensor)
+                    _, v_vals = v_net(tensor)
                 p_probs = F.softmax(p_logits, dim=1).cpu().numpy()
-
-            # Value evaluation from vθ
-            with torch.no_grad():
-                _, v_vals = v_net(tensor)
                 v_np = v_vals.cpu().numpy().ravel()
 
             for j, (nid, (node, indices)) in enumerate(unique_map.items()):
