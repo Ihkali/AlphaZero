@@ -19,7 +19,6 @@ SL/logs/
 *.zip
 
 # Shell scripts
-sl.sh
 
 # Python
 __pycache__/
